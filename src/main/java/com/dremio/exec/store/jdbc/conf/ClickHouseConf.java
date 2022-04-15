@@ -17,101 +17,124 @@ package com.dremio.exec.store.jdbc.conf;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
-import org.hibernate.validator.constraints.NotBlank;
+import com.dremio.options.OptionManager;
+import com.dremio.security.CredentialsService;
 
 import com.dremio.exec.catalog.conf.DisplayMetadata;
 import com.dremio.exec.catalog.conf.NotMetadataImpacting;
+import com.dremio.exec.catalog.conf.Secret;
 import com.dremio.exec.catalog.conf.SourceType;
-import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.store.jdbc.CloseableDataSource;
 import com.dremio.exec.store.jdbc.DataSources;
+import com.dremio.exec.store.jdbc.JdbcPluginConfig;
 import com.dremio.exec.store.jdbc.JdbcStoragePlugin;
-import com.dremio.exec.store.jdbc.JdbcStoragePlugin.Config;
 import com.dremio.exec.store.jdbc.dialect.arp.ArpDialect;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.annotations.VisibleForTesting;
-import com.dremio.exec.catalog.conf.Secret;
-
+import org.apache.log4j.Logger;
 import io.protostuff.Tag;
-
+import java.util.Properties;
+import javax.validation.constraints.Max;
+import javax.validation.constraints.Min;
+import javax.validation.constraints.NotBlank;
 /**
- * Configuration for ClickHouse sources.
+ * Configuration for ClickHouseConf sources.
  */
-@SourceType(value = "CLICKHOUSE", label = "ClickHouse")
+@SourceType(value = "ClickHouse", label = "ClickHouse", uiConfig = "clickhouse-layout.json", externalQuerySupported = true)
 public class ClickHouseConf extends AbstractArpConf<ClickHouseConf> {
   private static final String ARP_FILENAME = "arp/implementation/clickhouse-arp.yaml";
   private static final ArpDialect ARP_DIALECT =
       AbstractArpConf.loadArpFile(ARP_FILENAME, (ArpDialect::new));
-  // private static final String DRIVER = "ru.yandex.clickhouse.ClickHouseDriver";
+  private static final String DRIVER = "com.clickhouse.jdbc.ClickHouseDriver";
+  private static Logger logger = Logger.getLogger(ClickHouseConf.class);
 
   @NotBlank
   @Tag(1)
-  @DisplayMetadata(label = "Host [localhost, 127.0.0.1, 127.1.1.0]")
-  public String host="localhost";
+  @DisplayMetadata(label = "Host")
+  public String host;
 
   @NotBlank
   @Tag(2)
-  @DisplayMetadata(label = "Port [8123]")
-  public String port="8123";
+  @Min(1)
+  @Max(65535)
+  @DisplayMetadata(label = "Port")
+  public String port;
 
+  @NotBlank
   @Tag(3)
-  @DisplayMetadata(label = "Database [default]")
-  public String database="default";
-  
+  @DisplayMetadata(label = "Username")
+  public String username;
+
   @NotBlank
   @Tag(4)
-  @DisplayMetadata(label = "User [default]")
-  public String user="default";
-
-  @NotBlank
   @Secret
-  @Tag(5)
   @DisplayMetadata(label = "Password")
   public String password;
-  /*
-  @Tag(6)
-  @DisplayMetadata(label = "Options [E.g. receive_timeout=6000&connect_timeout=567890]")
-  public String options;
-  */
-  @NotBlank
-  @Tag(6)
-  @DisplayMetadata(label = "JDBC Driver [E.g. ru.yandex.clickhouse.ClickHouseDriver , cc.blynk.clickhouse.ClickHouseDriver , com.github.housepower.jdbc.ClickHouseDriver]")
-  public String driver="ru.yandex.clickhouse.ClickHouseDriver";
-  /*
-  @Tag(2)
+
+  @Tag(5)
   @DisplayMetadata(label = "Record fetch size")
   @NotMetadataImpacting
   public int fetchSize = 200;
-  */
+
+  @Tag(6)
+  @DisplayMetadata(label = "Encrypt connection")
+  public boolean useSsl = false;
+
+  @Tag(7)
+  @NotMetadataImpacting
+  @JsonIgnore
+  @DisplayMetadata(label = "Grant External Query access (External Query allows creation of VDS from a Snowflake query. Learn more here: https://docs.dremio.com/data-sources/external-queries.html#enabling-external-queries)")
+  public boolean enableExternalQuery = false;
+
+  @Tag(8)
+  @DisplayMetadata(label = "Maximum idle connections")
+  @NotMetadataImpacting
+  public int maxIdleConns = 8;
+
+  @Tag(9)
+  @DisplayMetadata(label = "Connection idle time (s)")
+  @NotMetadataImpacting
+  public int idleTimeSec = 60;
+
+  @NotBlank
+  @Tag(10)
+  @DisplayMetadata(label = "Database")
+  public String database;
+
   @VisibleForTesting
   public String toJdbcConnectionString() {
-    host = host == null ? "localhost" : host;
-    port = port == null ? "8123" : port;
-    database = database == null ? "default" : database;
-    user = user == null ? "default" : user;
-    final String password = checkNotNull(this.password, "Missing Password.");
-    driver = driver == null ? "ru.yandex.clickhouse.ClickHouseDriver" : driver;
-    
-    // jdbc:clickhouse://<host>:<port>[/<database>]
-    // jdbc:clickhouse://<host>:<port>[/<database>]?user=<user>&password=<password>
+    final String host = checkNotNull(this.host, "Missing host.");
+    final String username = checkNotNull(this.username, "Missing username.");
+    final String password = checkNotNull(this.password, "Missing password.");
+    final String port = checkNotNull(this.port, "Missing port.");
+    final String database = checkNotNull(this.database, "Missing database.");
 
-    return String.format("jdbc:clickhouse://%s:%s/%s?user=%s&password=%s" /* &%s */ , host, port, database, user, password /*, options*/ );
+    final String connect = String.format("jdbc:ch://%s:%s/%s", host, port, database);
+    logger.info("url to ClickHouse: " + connect);
+    return connect;
   }
 
-  @Override
-  @VisibleForTesting
-  public Config toPluginConfig(SabotContext context) {
-    return JdbcStoragePlugin.Config.newBuilder()
-        .withDialect(getDialect())
-        // .withFetchSize(fetchSize)
-        .withDatasourceFactory(this::newDataSource)
-        .clearHiddenSchemas()
-        // .addHiddenSchema("SYSTEM")
-        .build();
-  }
+    @Override
+    @VisibleForTesting
+    public JdbcPluginConfig buildPluginConfig(
+            JdbcPluginConfig.Builder configBuilder,
+            CredentialsService credentialsService,
+            OptionManager optionManager
+    ){
+        return configBuilder.withDialect(getDialect())
+                .withDatasourceFactory(this::newDataSource)
+                .withAllowExternalQuery(enableExternalQuery)
+                .build();
+    }
 
   private CloseableDataSource newDataSource() {
-    final String jdbcConnectionString=toJdbcConnectionString();
-    return DataSources.newGenericConnectionPoolDataSource(driver,     jdbcConnectionString, /* user */ null, /* password */ null, null, DataSources.CommitMode.DRIVER_SPECIFIED_COMMIT_MODE);
+        final Properties properties = new Properties();
+
+        if (useSsl) {
+        properties.setProperty("sslConnection", "true");
+        }
+    return DataSources.newGenericConnectionPoolDataSource(DRIVER,
+      toJdbcConnectionString(), username, password, properties, DataSources.CommitMode.DRIVER_SPECIFIED_COMMIT_MODE, maxIdleConns, idleTimeSec);
   }
 
   @Override
